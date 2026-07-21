@@ -3,7 +3,7 @@ import os
 import asyncio
 from datetime import datetime
 from typing import List
-from src.domain.activity import Activity
+
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart, Command
@@ -11,29 +11,25 @@ from aiogram.types import Message
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
-from src.infrastructure.database import AsyncSessionLocal
+from src.infrastructure.database import AsyncSessionLocal, engine, Base
 from src.infrastructure.garmin_adapter import GarminAdapter
 from src.infrastructure.repository import ActivityRepository
+from src.domain.activity import Activity
 from src.domain.readiness_engine import ReadinessEngine, InsufficientHistoryError
 from src.infrastructure.exceptions import InfrastructureError
 
-# Logging estructurado para monitoreo del servicio
 logger = logging.getLogger("presentation.telegram_bot")
 
-# 1. Inyección explícita del archivo .env al entorno del sistema operativo
 load_dotenv()
 
-# 2. Extracción de credenciales
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GARMIN_EMAIL = os.environ.get("GARMIN_EMAIL")
 GARMIN_PASSWORD = os.environ.get("GARMIN_PASSWORD")
 
-# 3. Patrón Fail-Fast: Validación estricta de infraestructura antes del arranque
 if not TELEGRAM_TOKEN or not GARMIN_EMAIL or not GARMIN_PASSWORD:
     logger.critical("Fallo de arranque: Credenciales de entorno (Telegram o Garmin) incompletas.")
     raise ValueError("Las variables de entorno requeridas no están configuradas en el archivo .env.")
 
-# Configuración estricta del cliente de Telegram
 bot = Bot(
     token=TELEGRAM_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -56,17 +52,13 @@ async def analyze_performance(message: Message) -> None:
         await message.answer("⚠️ <b>Fallo de Servidor:</b> Credenciales de entorno corrompidas.")
         return
 
-    # Feedback inmediato para UX
     status_msg = await message.answer("⏳ <i>Sincronizando métricas con Garmin Connect...</i>")
     
     try:
-        # 1. Extracción (Offloading con Tipado Estricto y Scope Aislado)
-        # Se inyectan los parámetros explícitamente para mantener la garantía de tipos (str)
         def _fetch_garmin_data(email: str, password: str) -> List[Activity]:
             adapter = GarminAdapter(email=email, password=password)
             return adapter.fetch_recent_activities(limit=30)
 
-        # La variable activities asume estrictamente List[Activity]
         activities: List[Activity] = await asyncio.to_thread(
             _fetch_garmin_data, GARMIN_EMAIL, GARMIN_PASSWORD
         )
@@ -75,18 +67,15 @@ async def analyze_performance(message: Message) -> None:
             await status_msg.edit_text("ℹ️ No se encontraron actividades deportivas recientes.")
             return
 
-        # 2. Persistencia (I/O Asíncrono Nativo)
         async with AsyncSessionLocal() as session:
             repository = ActivityRepository(session=session)
             inserted_count: int = await repository.bulk_upsert_activities(activities)
 
-        # 3. Procesamiento Fisiológico
         assessment = ReadinessEngine.calculate_acwr(
             activities=activities, 
             target_date=datetime.now()
         )
 
-        # 4. Construcción de la Vista
         informe = (
             f"📊 <b>REPORTE DE RENDIMIENTO</b>\n\n"
             f"🏃‍♂️ <b>Sesiones extraídas:</b> {len(activities)}\n"
@@ -113,23 +102,24 @@ async def main() -> None:
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
+    
+    logger.info("Inicializando infraestructura de base de datos...")
+    # Generación asíncrona del esquema relacional (Garantiza que las tablas existan antes de recibir tráfico)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        
     logger.info("Iniciando servicio de Telegram Bot (Polling mode)...")
     
-    # Ignora mensajes enviados mientras el bot estaba apagado
     await bot.delete_webhook(drop_pending_updates=True) 
     
     logger.info("✅ Conexión establecida. El bot está escuchando eventos. (Presiona Ctrl+C para apagar)")
     
-    # type: ignore silencia la advertencia estricta de Pylance por falta de stubs en aiogram
     await dp.start_polling(bot) # type: ignore 
 
 if __name__ == "__main__":
     try:
-        # Ejecución del Event Loop principal
         asyncio.run(main())
     except KeyboardInterrupt:
-        # Graceful Shutdown: Apagado limpio sin tracebacks ruidosos
         logger.info("🛑 Servicio detenido manualmente por el usuario (SIGINT). Liberando recursos...")
     except Exception as e:
-        # Captura de fallos críticos a nivel de sistema (ej. pérdida total de red)
         logger.critical("💥 Colapso crítico del microservicio: %s", str(e))
