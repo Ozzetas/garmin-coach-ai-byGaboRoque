@@ -1,0 +1,59 @@
+import logging
+from typing import List
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.dialects.sqlite import insert
+
+from src.domain.activity import Activity
+from src.infrastructure.models import ActivityModel
+from src.infrastructure.exceptions import InfrastructureError
+
+# Logging estructurado para auditoría de base de datos
+logger = logging.getLogger("infrastructure.repository")
+
+class ActivityRepository:
+    """
+    Patrón Repository: Aísla la capa de acceso a datos de la lógica de aplicación.
+    Garantiza el principio de Responsabilidad Única (SOLID).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def bulk_upsert_activities(self, activities: List[Activity]) -> int:
+        """
+        Inserta actividades masivamente mediante un comando optimizado.
+        Si el activity_id ya existe, ignora la inserción protegiendo la integridad transaccional.
+        """
+        if not activities:
+            return 0
+
+        try:
+            # Mapeo estricto del dominio hacia diccionarios planos para el ORM
+            values = [
+                {
+                    "activity_id": act.activity_id,
+                    "timestamp": act.timestamp,
+                    "distance_meters": act.distance_meters,
+                    "duration_seconds": act.duration_seconds,
+                    "avg_heart_rate": act.avg_heart_rate
+                }
+                for act in activities
+            ]
+
+            # Sentencia nativa de SQLite: INSERT OR IGNORE
+            stmt = insert(ActivityModel).values(values)
+            stmt = stmt.on_conflict_do_nothing(index_elements=['activity_id'])
+            
+            # Ejecución atómica
+            result = await self._session.execute(stmt)
+            await self._session.commit()
+            
+            inserted_rows: int = result.rowcount
+            logger.info("Sincronización DB exitosa: %d nuevas actividades persistidas.", inserted_rows)
+            return inserted_rows
+
+        except Exception as e:
+            # Rollback explícito ante catástrofes (falla de disco, memoria, etc.)
+            await self._session.rollback()
+            logger.error("Fallo crítico de transacción al persistir actividades: %s", str(e))
+            raise InfrastructureError("Fallo de persistencia en disco al guardar datos.") from e
