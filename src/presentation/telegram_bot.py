@@ -2,7 +2,8 @@ import logging
 import os
 import asyncio
 from datetime import datetime
-
+from typing import List
+from src.domain.activity import Activity
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart, Command
@@ -50,37 +51,42 @@ async def send_welcome(message: Message) -> None:
 
 @dp.message(Command("analizar"))
 async def analyze_performance(message: Message) -> None:
-    """Orquesta la sincronización, persistencia y análisis de manera asíncrona."""
-    # Tipado estricto para Pylance: Re-verificación de nulos en runtime para asegurar a Mypy/Pylance
-    # que las variables globales no son None en el momento de la ejecución.
+    """Orquesta la sincronización, persistencia y análisis de manera asíncrona sin bloquear el Event Loop."""
     if TELEGRAM_TOKEN is None or GARMIN_EMAIL is None or GARMIN_PASSWORD is None:
         await message.answer("⚠️ <b>Fallo de Servidor:</b> Credenciales de entorno corrompidas.")
         return
 
-    # Feedback inmediato para UX (User Experience)
+    # Feedback inmediato para UX
     status_msg = await message.answer("⏳ <i>Sincronizando métricas con Garmin Connect...</i>")
     
     try:
-        # 1. Extracción (Capa de Infraestructura)
-        adapter = GarminAdapter(email=GARMIN_EMAIL, password=GARMIN_PASSWORD)
-        activities = adapter.fetch_recent_activities(limit=30)
+        # 1. Extracción (Offloading con Tipado Estricto y Scope Aislado)
+        # Se inyectan los parámetros explícitamente para mantener la garantía de tipos (str)
+        def _fetch_garmin_data(email: str, password: str) -> List[Activity]:
+            adapter = GarminAdapter(email=email, password=password)
+            return adapter.fetch_recent_activities(limit=30)
+
+        # La variable activities asume estrictamente List[Activity]
+        activities: List[Activity] = await asyncio.to_thread(
+            _fetch_garmin_data, GARMIN_EMAIL, GARMIN_PASSWORD
+        )
         
         if not activities:
             await status_msg.edit_text("ℹ️ No se encontraron actividades deportivas recientes.")
             return
 
-        # 2. Persistencia (Capa de Datos con Context Manager manual)
+        # 2. Persistencia (I/O Asíncrono Nativo)
         async with AsyncSessionLocal() as session:
             repository = ActivityRepository(session=session)
             inserted_count: int = await repository.bulk_upsert_activities(activities)
 
-        # 3. Procesamiento Fisiológico (Capa de Dominio)
+        # 3. Procesamiento Fisiológico
         assessment = ReadinessEngine.calculate_acwr(
             activities=activities, 
             target_date=datetime.now()
         )
 
-        # 4. Construcción de la Vista (Capa de Presentación)
+        # 4. Construcción de la Vista
         informe = (
             f"📊 <b>REPORTE DE RENDIMIENTO</b>\n\n"
             f"🏃‍♂️ <b>Sesiones extraídas:</b> {len(activities)}\n"
@@ -92,7 +98,6 @@ async def analyze_performance(message: Message) -> None:
         
         await status_msg.edit_text(informe)
 
-    # Bloques de manejo de excepciones explícitos
     except InsufficientHistoryError as e:
         await status_msg.edit_text(f"📉 <b>Historial Insuficiente:</b> {str(e)}")
     except InfrastructureError as e:
