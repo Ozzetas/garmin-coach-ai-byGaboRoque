@@ -3,6 +3,7 @@ import os
 import asyncio
 from datetime import datetime
 
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message
@@ -18,10 +19,18 @@ from src.infrastructure.exceptions import InfrastructureError
 # Logging estructurado para monitoreo del servicio
 logger = logging.getLogger("presentation.telegram_bot")
 
-# Inyección de dependencias estáticas desde el entorno
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-GARMIN_EMAIL = os.environ.get("GARMIN_EMAIL", "")
-GARMIN_PASSWORD = os.environ.get("GARMIN_PASSWORD", "")
+# 1. Inyección explícita del archivo .env al entorno del sistema operativo
+load_dotenv()
+
+# 2. Extracción de credenciales
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GARMIN_EMAIL = os.environ.get("GARMIN_EMAIL")
+GARMIN_PASSWORD = os.environ.get("GARMIN_PASSWORD")
+
+# 3. Patrón Fail-Fast: Validación estricta de infraestructura antes del arranque
+if not TELEGRAM_TOKEN or not GARMIN_EMAIL or not GARMIN_PASSWORD:
+    logger.critical("Fallo de arranque: Credenciales de entorno (Telegram o Garmin) incompletas.")
+    raise ValueError("Las variables de entorno requeridas no están configuradas en el archivo .env.")
 
 # Configuración estricta del cliente de Telegram
 bot = Bot(
@@ -42,8 +51,10 @@ async def send_welcome(message: Message) -> None:
 @dp.message(Command("analizar"))
 async def analyze_performance(message: Message) -> None:
     """Orquesta la sincronización, persistencia y análisis de manera asíncrona."""
-    if not TELEGRAM_TOKEN or not GARMIN_EMAIL:
-        await message.answer("⚠️ <b>Fallo de Servidor:</b> Credenciales de entorno no configuradas.")
+    # Tipado estricto para Pylance: Re-verificación de nulos en runtime para asegurar a Mypy/Pylance
+    # que las variables globales no son None en el momento de la ejecución.
+    if TELEGRAM_TOKEN is None or GARMIN_EMAIL is None or GARMIN_PASSWORD is None:
+        await message.answer("⚠️ <b>Fallo de Servidor:</b> Credenciales de entorno corrompidas.")
         return
 
     # Feedback inmediato para UX (User Experience)
