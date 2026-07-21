@@ -113,8 +113,18 @@ async def main() -> None:
     # Ignora mensajes enviados mientras el bot estaba apagado
     await bot.delete_webhook(drop_pending_updates=True) 
     
+    logger.info("✅ Conexión establecida. El bot está escuchando eventos. (Presiona Ctrl+C para apagar)")
+    
     # type: ignore silencia la advertencia estricta de Pylance por falta de stubs en aiogram
     await dp.start_polling(bot) # type: ignore 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        # Ejecución del Event Loop principal
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        # Graceful Shutdown: Apagado limpio sin tracebacks ruidosos
+        logger.info("🛑 Servicio detenido manualmente por el usuario (SIGINT). Liberando recursos...")
+    except Exception as e:
+        # Captura de fallos críticos a nivel de sistema (ej. pérdida total de red)
+        logger.critical("💥 Colapso crítico del microservicio: %s", str(e))
