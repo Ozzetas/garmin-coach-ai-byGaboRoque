@@ -1,0 +1,107 @@
+import logging
+import os
+import asyncio
+from datetime import datetime
+
+from aiogram import Bot, Dispatcher
+from aiogram.filters import CommandStart, Command
+from aiogram.types import Message
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+
+from src.infrastructure.database import AsyncSessionLocal
+from src.infrastructure.garmin_adapter import GarminAdapter
+from src.infrastructure.repository import ActivityRepository
+from src.domain.readiness_engine import ReadinessEngine, InsufficientHistoryError
+from src.infrastructure.exceptions import InfrastructureError
+
+# Logging estructurado para monitoreo del servicio
+logger = logging.getLogger("presentation.telegram_bot")
+
+# Inyección de dependencias estáticas desde el entorno
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+GARMIN_EMAIL = os.environ.get("GARMIN_EMAIL", "")
+GARMIN_PASSWORD = os.environ.get("GARMIN_PASSWORD", "")
+
+# Configuración estricta del cliente de Telegram
+bot = Bot(
+    token=TELEGRAM_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+dp = Dispatcher()
+
+@dp.message(CommandStart())
+async def send_welcome(message: Message) -> None:
+    """Endpoint de presentación y onboarding del usuario."""
+    await message.answer(
+        "👋 <b>Bienvenido a Garmin Coach AI</b>\n\n"
+        "Soy tu asistente fisiológico automatizado. Utiliza el comando /analizar "
+        "para sincronizar tus últimas métricas y obtener un resumen de tu estado de forma."
+    )
+
+@dp.message(Command("analizar"))
+async def analyze_performance(message: Message) -> None:
+    """Orquesta la sincronización, persistencia y análisis de manera asíncrona."""
+    if not TELEGRAM_TOKEN or not GARMIN_EMAIL:
+        await message.answer("⚠️ <b>Fallo de Servidor:</b> Credenciales de entorno no configuradas.")
+        return
+
+    # Feedback inmediato para UX (User Experience)
+    status_msg = await message.answer("⏳ <i>Sincronizando métricas con Garmin Connect...</i>")
+    
+    try:
+        # 1. Extracción (Capa de Infraestructura)
+        adapter = GarminAdapter(email=GARMIN_EMAIL, password=GARMIN_PASSWORD)
+        activities = adapter.fetch_recent_activities(limit=30)
+        
+        if not activities:
+            await status_msg.edit_text("ℹ️ No se encontraron actividades deportivas recientes.")
+            return
+
+        # 2. Persistencia (Capa de Datos con Context Manager manual)
+        async with AsyncSessionLocal() as session:
+            repository = ActivityRepository(session=session)
+            inserted_count: int = await repository.bulk_upsert_activities(activities)
+
+        # 3. Procesamiento Fisiológico (Capa de Dominio)
+        assessment = ReadinessEngine.calculate_acwr(
+            activities=activities, 
+            target_date=datetime.now()
+        )
+
+        # 4. Construcción de la Vista (Capa de Presentación)
+        informe = (
+            f"📊 <b>REPORTE DE RENDIMIENTO</b>\n\n"
+            f"🏃‍♂️ <b>Sesiones extraídas:</b> {len(activities)}\n"
+            f"💾 <b>Nuevas sincronizadas:</b> {inserted_count}\n"
+            f"⚡ <b>ACWR (Ratio de Carga):</b> {assessment.acwr}\n"
+            f"⚠️ <b>Categoría de Riesgo:</b> {assessment.risk_category}\n\n"
+            f"💡 <b>Análisis del Coach:</b>\n<i>{assessment.actionable_insight}</i>"
+        )
+        
+        await status_msg.edit_text(informe)
+
+    # Bloques de manejo de excepciones explícitos
+    except InsufficientHistoryError as e:
+        await status_msg.edit_text(f"📉 <b>Historial Insuficiente:</b> {str(e)}")
+    except InfrastructureError as e:
+        logger.error("Fallo de red en capa de presentación: %s", str(e))
+        await status_msg.edit_text("❌ Fallo de conectividad con los servidores de Garmin. Intenta más tarde.")
+    except Exception as e:
+        logger.error("Excepción no controlada: %s", str(e))
+        await status_msg.edit_text("❌ Ocurrió un error crítico al procesar los datos.")
+
+async def main() -> None:
+    """Punto de entrada del Event Loop para el microservicio del Bot."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger.info("Iniciando servicio de Telegram Bot (Polling mode)...")
+    
+    # Ignora mensajes enviados mientras el bot estaba apagado
+    await bot.delete_webhook(drop_pending_updates=True) 
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
