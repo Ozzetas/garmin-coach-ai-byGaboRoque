@@ -101,7 +101,9 @@ async def main() -> None:
     
     # Ignora mensajes enviados mientras el bot estaba apagado
     await bot.delete_webhook(drop_pending_updates=True) 
-    await dp.start_polling(bot)
+    
+    # type: ignore silencia la advertencia estricta de Pylance por falta de stubs en aiogram
+    await dp.start_polling(bot) # type: ignore 
 
 if __name__ == "__main__":
     asyncio.run(main())
