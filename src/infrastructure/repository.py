@@ -1,7 +1,8 @@
 import logging
-from typing import List
+from typing import List, Dict, Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy import CursorResult
 
 from src.domain.activity import Activity
 from src.infrastructure.models import ActivityModel
@@ -28,8 +29,8 @@ class ActivityRepository:
             return 0
 
         try:
-            # Mapeo estricto del dominio hacia diccionarios planos para el ORM
-            values = [
+            # Tipado explícito: Bloquea la degradación a 'Unknown' en el linter
+            values: List[Dict[str, Any]] = [
                 {
                     "activity_id": act.activity_id,
                     "timestamp": act.timestamp,
@@ -44,12 +45,15 @@ class ActivityRepository:
             stmt = insert(ActivityModel).values(values)
             stmt = stmt.on_conflict_do_nothing(index_elements=['activity_id'])
             
-            # Ejecución atómica
-            result = await self._session.execute(stmt)
+            # Ejecución atómica y casteo estricto para exponer el atributo 'rowcount'
+            raw_result = await self._session.execute(stmt)
+            result = cast(CursorResult[Any], raw_result)
             await self._session.commit()
             
-            inserted_rows: int = result.rowcount
+            # Tipado estricto en la asignación final
+            inserted_rows: int = int(result.rowcount)
             logger.info("Sincronización DB exitosa: %d nuevas actividades persistidas.", inserted_rows)
+            
             return inserted_rows
 
         except Exception as e:
