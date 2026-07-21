@@ -1,0 +1,8 @@
+{
+    "python.analysis.typeCheckingMode": "strict",
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportUnknownMemberType": "warning",
+        "reportUnknownVariableType": "warning"
+    }
+}
