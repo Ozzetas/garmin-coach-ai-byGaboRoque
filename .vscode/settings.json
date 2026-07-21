@@ -3,6 +3,7 @@
     "python.analysis.autoImportCompletions": true,
     "python.analysis.diagnosticSeverityOverrides": {
         "reportUnknownMemberType": "warning",
-        "reportUnknownVariableType": "warning"
+        "reportUnknownVariableType": "warning",
+        "reportMissingTypeStubs": "none"
     }
 }
