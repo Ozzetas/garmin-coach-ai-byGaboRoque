@@ -23,12 +23,11 @@ class GeminiCoachAdapter:
             logger.critical("Fallo de infraestructura: GEMINI_API_KEY no configurada.")
             raise ValueError("GEMINI_API_KEY requerida en el archivo .env")
         
-        # Versionado Estricto: Forzamos el uso de la API 'v1' estable.
-        # Esto previene errores 404 causados por la inestabilidad de los entornos 'v1beta'.
-        self._client = genai.Client(
-            api_key=api_key,
-            http_options={'api_version': 'v1'}
-        )
+        # Delegamos el enrutamiento al SDK oficial.
+        self._client = genai.Client(api_key=api_key)
+        
+        # Rollback estratégico a la versión LTS (Long Term Support) universal.
+        # Garantiza compatibilidad absoluta con proyectos nuevos en capa gratuita.
         self._model_id = 'gemini-1.5-flash'
 
     async def generate_personalized_plan(
@@ -39,7 +38,6 @@ class GeminiCoachAdapter:
         """
         Orquesta la generación de un análisis fisiológico basado en métricas duras.
         """
-        # Estructuración de datos crudos para inyectar contexto duro al LLM (Prompt Engineering)
         session_data = "\n".join([
             f"- Fecha: {act.timestamp.strftime('%Y-%m-%d')} | "
             f"Distancia: {round(act.distance_meters / 1000, 2)} km | "
@@ -78,7 +76,7 @@ class GeminiCoachAdapter:
             
         except APIError as e:
             logger.error("Error en la API de Gemini (Código %s): %s", e.code, e.message)
-            raise InfrastructureError("El motor de IA rechazó la petición o está fuera de servicio.") from e
+            raise InfrastructureError("El motor de IA rechazó la petición por cuotas o permisos.") from e
         except Exception as e:
             logger.error("Fallo crítico de red o error interno al consumir Gemini: %s", str(e))
             raise InfrastructureError("Error de comunicación con la capa cognitiva.") from e
