@@ -1,6 +1,8 @@
 import logging
 from typing import List, Dict, Any, cast
 from datetime import datetime
+from src.domain.biometrics import DailyBiometrics
+from datetime import date
 
 from garminconnect import (
     Garmin,
@@ -100,3 +102,23 @@ class GarminAdapter:
                 
         logger.info("Ingesta finalizada: %d actividades parseadas con éxito.", len(parsed_activities))
         return parsed_activities
+    
+    def fetch_daily_biometrics(self, target_date: date) -> DailyBiometrics:
+        """
+        Extrae la telemetría diaria general del usuario (pasos, pulso basal).
+        """
+        try:
+            # garminconnect requiere la fecha en formato ISO (YYYY-MM-DD)
+            stats = self._client.get_stats(target_date.isoformat())
+            
+            return DailyBiometrics(
+                target_date=target_date,
+                total_steps=stats.get("totalSteps", 0),
+                resting_heart_rate=stats.get("restingHeartRate"),
+                max_heart_rate=stats.get("maxHeartRate"),
+                min_heart_rate=stats.get("minHeartRate")
+            )
+        except Exception as e:
+            # Manejo explícito sin derribar la aplicación si Garmin falla un día particular
+            logger.error("Fallo al extraer métricas diarias de Garmin: %s", str(e))
+            raise InfrastructureError("Error de extracción de biometría diaria desde Garmin Connect.") from e

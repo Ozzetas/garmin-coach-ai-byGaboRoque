@@ -2,7 +2,8 @@ import logging
 import os
 import asyncio
 from datetime import datetime
-from typing import List, Callable, Dict, Any, Awaitable
+from typing import List, Callable, Dict, Any, Awaitable, Tuple
+from datetime import date
 
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, BaseMiddleware
@@ -17,6 +18,10 @@ from src.infrastructure.repository import ActivityRepository
 from src.domain.activity import Activity
 from src.domain.readiness_engine import ReadinessEngine, InsufficientHistoryError
 from src.infrastructure.exceptions import InfrastructureError
+from src.domain.biometrics import DailyBiometrics
+
+# Inyección exclusiva de la nueva capa cognitiva basada en Llama-3 (Groq)
+from src.infrastructure.groq_adapter import GroqCoachAdapter
 
 # 1. Configuración de Loggers
 logger = logging.getLogger("presentation.telegram_bot")
@@ -67,14 +72,19 @@ async def analyze_performance(message: Message) -> None:
         await message.answer("⚠️ <b>Fallo de Servidor:</b> Credenciales de entorno corrompidas.")
         return
 
-    status_msg = await message.answer("⏳ <i>Sincronizando métricas con Garmin Connect...</i>")
+    status_msg = await message.answer("⏳ <i>Sincronizando telemetría holística con Garmin Connect...</i>")
     
     try:
-        def _fetch_garmin_data(email: str, password: str) -> List[Activity]:
+        # Offloading de operaciones bloqueantes empaquetadas
+        def _fetch_garmin_data(email: str, password: str) -> Tuple[List[Activity], DailyBiometrics]:
             adapter = GarminAdapter(email=email, password=password)
-            return adapter.fetch_recent_activities(limit=30)
+            acts = adapter.fetch_recent_activities(limit=30)
+            today = date.today()
+            bio = adapter.fetch_daily_biometrics(target_date=today)
+            return acts, bio
 
-        activities: List[Activity] = await asyncio.to_thread(
+        # Desempaquetado con tipado estricto
+        activities, daily_stats = await asyncio.to_thread(
             _fetch_garmin_data, GARMIN_EMAIL, GARMIN_PASSWORD
         )
         
@@ -91,7 +101,15 @@ async def analyze_performance(message: Message) -> None:
             target_date=datetime.now()
         )
 
-        # Mapeo de datos crudos para visualización (Prueba de extracción real)
+        await status_msg.edit_text("🧠 <i>Analizando biometría cruzada con motor cognitivo Llama-3.3...</i>")
+        
+        llm_adapter = GroqCoachAdapter()
+        ai_insight = await llm_adapter.generate_personalized_plan(
+            assessment=assessment,
+            recent_sessions=activities,
+            daily_stats=daily_stats
+        )
+
         recent_sessions = activities[:3]
         sessions_text = ""
         for act in recent_sessions:
@@ -100,14 +118,16 @@ async def analyze_performance(message: Message) -> None:
             hr = act.avg_heart_rate if act.avg_heart_rate else "N/A"
             sessions_text += f"🔹 {date_str} - {dist_km} km (HR: {hr} bpm)\n"
 
+        # Corrección: Reintegración de inserted_count en la vista de presentación
         informe = (
-            f"📊 <b>REPORTE DE RENDIMIENTO</b>\n\n"
-            f"🏃‍♂️ <b>Sesiones extraídas:</b> {len(activities)}\n"
-            f"💾 <b>Nuevas sincronizadas:</b> {inserted_count}\n"
+            f"📊 <b>REPORTE DE RENDIMIENTO HOLÍSTICO</b>\n\n"
+            f"💾 <b>Registros Sincronizados:</b> {inserted_count}\n"
+            f"👟 <b>Pasos de hoy:</b> {daily_stats.total_steps}\n"
+            f"🫀 <b>FC Reposo:</b> {daily_stats.resting_heart_rate or '--'} bpm\n"
             f"⚡ <b>ACWR (Ratio de Carga):</b> {assessment.acwr}\n"
-            f"⚠️ <b>Categoría de Riesgo:</b> {assessment.risk_category}\n\n"
-            f"📈 <b>Últimas Sesiones Registradas:</b>\n{sessions_text}\n"
-            f"💡 <b>Análisis del Coach:</b>\n<i>{assessment.actionable_insight}</i>"
+            f"⚠️ <b>Riesgo Estructural:</b> {assessment.risk_category}\n\n"
+            f"📈 <b>Últimas Sesiones:</b>\n{sessions_text}\n"
+            f"💡 <b>Análisis del Coach:</b>\n\n{ai_insight}"
         )
         
         await status_msg.edit_text(informe)
@@ -116,15 +136,14 @@ async def analyze_performance(message: Message) -> None:
     except InsufficientHistoryError as e:
         await status_msg.edit_text(f"📉 <b>Historial Insuficiente:</b> {str(e)}")
     except InfrastructureError as e:
-        logger.error("Fallo de red en capa de presentación: %s", str(e))
-        await status_msg.edit_text("❌ Fallo de conectividad con los servidores de Garmin. Intenta más tarde.")
+        logger.error("Fallo de infraestructura: %s", str(e))
+        await status_msg.edit_text(f"❌ Fallo de servicio: {str(e)}")
     except Exception as e:
         logger.error("Excepción no controlada: %s", str(e))
         await status_msg.edit_text("❌ Ocurrió un error crítico al procesar los datos.")
-
+        
 # --- INICIALIZACIÓN DEL MICROSERVICIO ---
 async def main() -> None:
-    # force=True toma el control absoluto del flujo de logs superando cualquier configuración previa
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
