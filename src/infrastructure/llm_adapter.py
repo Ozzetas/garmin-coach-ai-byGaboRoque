@@ -2,9 +2,8 @@ import logging
 import os
 from typing import List
 
-# Se suprime la advertencia de importación privada/desconocida
-# dado que el SDK de Google carece de tipado estricto exportado (PEP 561).
-import google.generativeai as genai  # type: ignore
+from google import genai
+from google.genai.errors import APIError
 
 from src.domain.activity import Activity
 from src.domain.readiness_engine import WorkloadAssessment
@@ -14,9 +13,9 @@ logger = logging.getLogger("infrastructure.llm_adapter")
 
 class GeminiCoachAdapter:
     """
-    Patrón Adapter: Encapsula el SDK de Google Gemini.
-    Aísla la lógica cognitiva del resto de la aplicación, permitiendo
-    intercambiar el modelo subyacente sin alterar el dominio.
+    Patrón Adapter: Encapsula el nuevo SDK oficial (google-genai).
+    Aísla la lógica cognitiva del resto de la aplicación y utiliza un cliente 
+    instanciable para garantizar Thread-Safety en entornos asíncronos.
     """
     def __init__(self) -> None:
         api_key = os.environ.get("GEMINI_API_KEY")
@@ -24,11 +23,13 @@ class GeminiCoachAdapter:
             logger.critical("Fallo de infraestructura: GEMINI_API_KEY no configurada.")
             raise ValueError("GEMINI_API_KEY requerida en el archivo .env")
         
-        # type: ignore silencia la falta de firmas explícitas en el SDK
-        genai.configure(api_key=api_key) # type: ignore
-        
-        # type: ignore requerido porque GenerativeModel se considera importación privada en strict mode
-        self._model = genai.GenerativeModel('gemini-1.5-flash') # type: ignore
+        # Versionado Estricto: Forzamos el uso de la API 'v1' estable.
+        # Esto previene errores 404 causados por la inestabilidad de los entornos 'v1beta'.
+        self._client = genai.Client(
+            api_key=api_key,
+            http_options={'api_version': 'v1'}
+        )
+        self._model_id = 'gemini-1.5-flash'
 
     async def generate_personalized_plan(
         self, 
@@ -61,16 +62,23 @@ class GeminiCoachAdapter:
         )
 
         try:
-            logger.info("Enviando telemetría al motor cognitivo Gemini...")
+            logger.info("Enviando telemetría al motor cognitivo Gemini (google-genai SDK)...")
             
-            # type: ignore suprime la inferencia parcialmente desconocida del objeto Coroutine retornado
-            response = await self._model.generate_content_async(prompt) # type: ignore
+            # type: ignore aplicado exclusivamente a la llamada externa para silenciar
+            # la inferencia parcialmente desconocida del objeto GenerateContentResponse
+            response = await self._client.aio.models.generate_content( # type: ignore
+                model=self._model_id,
+                contents=prompt
+            )
             
             if not response.text:
                 raise ValueError("El modelo retornó una respuesta vacía.")
                 
             return str(response.text)
             
+        except APIError as e:
+            logger.error("Error en la API de Gemini (Código %s): %s", e.code, e.message)
+            raise InfrastructureError("El motor de IA rechazó la petición o está fuera de servicio.") from e
         except Exception as e:
-            logger.error("Fallo de red al consumir la API de Gemini: %s", str(e))
-            raise InfrastructureError("El motor de IA está temporalmente fuera de servicio.") from e
+            logger.error("Fallo crítico de red o error interno al consumir Gemini: %s", str(e))
+            raise InfrastructureError("Error de comunicación con la capa cognitiva.") from e
